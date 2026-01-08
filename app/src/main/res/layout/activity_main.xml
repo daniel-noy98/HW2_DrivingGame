@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rootGame"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#1F2937">
+    android:orientation="vertical"
+    android:background="#1F2937"
+    android:paddingTop="24dp">
 
     <LinearLayout
         android:id="@+id/header"
@@ -20,9 +23,7 @@
             android:layout_height="wrap_content"
             android:text="Menu"
             android:backgroundTint="#EC4899"
-            android:layout_marginEnd="12dp"
-            android:clickable="true"
-            android:focusable="true" />
+            android:layout_marginEnd="12dp" />
 
         <TextView
             android:id="@+id/tvScore"
@@ -44,30 +45,24 @@
             android:textStyle="bold"
             android:layout_marginEnd="12dp" />
 
-        <View
-            android:layout_width="0dp"
-            android:layout_height="0dp"
-            android:layout_weight="1" />
-
         <LinearLayout
             android:id="@+id/livesContainer"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="horizontal" />
+            android:orientation="horizontal"
+            android:layout_marginStart="12dp" />
     </LinearLayout>
 
     <com.example.hw1_drivinggame.GameView
         android:id="@+id/gameView"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:layout_below="@id/header"
-        android:layout_above="@id/controls" />
+        android:layout_height="0dp"
+        android:layout_weight="1" />
 
     <LinearLayout
         android:id="@+id/controls"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_alignParentBottom="true"
         android:background="#16A34A"
         android:orientation="horizontal"
         android:padding="16dp"
@@ -92,4 +87,4 @@
             android:backgroundTint="#EC4899" />
     </LinearLayout>
 
-</RelativeLayout>
+</LinearLayout>

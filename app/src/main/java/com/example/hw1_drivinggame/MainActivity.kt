@@ -7,11 +7,13 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.activity.OnBackPressedCallback
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import kotlin.random.Random
@@ -24,8 +26,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var tvDistance: TextView
 
     private lateinit var btnPauseMenu: Button
-    private lateinit var leftButton: Button
-    private lateinit var rightButton: Button
+    private lateinit var btnLeft: Button
+    private lateinit var btnRight: Button
 
     private lateinit var sensorManager: SensorManager
     private var accelSensor: Sensor? = null
@@ -37,11 +39,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private val moveCooldownMs = 180L
     private val tiltThreshold = 2.2f
 
+    private val handler = Handler(Looper.getMainLooper())
+    private var lastFrameTimeMs = 0L
+
+    private lateinit var engine: GameEngine
+    private lateinit var soundService: SoundService
+    private lateinit var vibrationService: VibrationService
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
-        applyStatusBarTopPadding()
 
         gameView = findViewById(R.id.gameView)
         livesContainer = findViewById(R.id.livesContainer)
@@ -49,66 +56,77 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         tvDistance = findViewById(R.id.tvDistance)
 
         btnPauseMenu = findViewById(R.id.btnPauseMenu)
-        leftButton = findViewById(R.id.leftButton)
-        rightButton = findViewById(R.id.rightButton)
+        btnLeft = findViewById(R.id.leftButton)
+        btnRight = findViewById(R.id.rightButton)
 
-        val sp = getSharedPreferences(MenuActivity.PREFS, Context.MODE_PRIVATE)
+        val sp = getSharedPreferences(MenuActivity.PREFS, MODE_PRIVATE)
         controlMode = sp.getString(MenuActivity.KEY_CONTROL_MODE, "BUTTONS") ?: "BUTTONS"
         speedMode = sp.getString(MenuActivity.KEY_SPEED_MODE, "SLOW") ?: "SLOW"
 
-        gameView.setSpeedMode(speedMode)
+        vibrationService = AndroidVibrationService(this)
+        soundService = AndroidSoundService(this)
+        engine = GameEngine(vibrationService, soundService)
+
+        engine.setSpeedMode(
+            if (speedMode == "FAST") GameEngine.SpeedMode.FAST else GameEngine.SpeedMode.SLOW
+        )
+
+        engine.setListener(object : GameEngine.Listener {
+            override fun onStateUpdated(state: GameEngine.State) {
+                runOnUiThread {
+                    gameView.setState(state)
+                    updateLives(state.lives)
+                    tvScore.text = "Score: ${state.score}"
+                    tvDistance.text = "Distance: ${state.distance}"
+                }
+            }
+
+            override fun onCollision(type: GameEngine.CollisionType, state: GameEngine.State) {
+                runOnUiThread {
+                    when (type) {
+                        GameEngine.CollisionType.ROCK ->
+                            Toast.makeText(this@MainActivity, "Crash!", Toast.LENGTH_SHORT).show()
+                        GameEngine.CollisionType.COIN ->
+                            Toast.makeText(this@MainActivity, "+10 Coin", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+
+            override fun onGameOver(state: GameEngine.State) {
+                runOnUiThread { showSaveScoreDialog() }
+            }
+        })
 
         if (controlMode == "SENSORS") {
-            leftButton.visibility = View.GONE
-            rightButton.visibility = View.GONE
+            btnLeft.visibility = View.GONE
+            btnRight.visibility = View.GONE
         } else {
-            leftButton.visibility = View.VISIBLE
-            rightButton.visibility = View.VISIBLE
-            leftButton.setOnClickListener { gameView.moveLeft() }
-            rightButton.setOnClickListener { gameView.moveRight() }
+            btnLeft.visibility = View.VISIBLE
+            btnRight.visibility = View.VISIBLE
+            btnLeft.setOnClickListener { engine.moveLeft() }
+            btnRight.setOnClickListener { engine.moveRight() }
         }
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
-        gameView.setLivesUpdateCallback { lives ->
-            runOnUiThread { updateLives(lives) }
-        }
-
-        gameView.setScoreUpdateCallback { score ->
-            runOnUiThread { tvScore.text = "Score: $score" }
-        }
-
-        gameView.setDistanceUpdateCallback { distance ->
-            runOnUiThread { tvDistance.text = "Distance: $distance" }
-        }
-
-        gameView.setGameOverCallback {
-            runOnUiThread { showSaveScoreDialog() }
-        }
-
         btnPauseMenu.setOnClickListener {
-            gameView.pauseGame()
+            pauseLoop()
             AlertDialog.Builder(this)
                 .setTitle("Return to Menu")
                 .setMessage("Stop the game and return to the menu?")
                 .setPositiveButton("Yes") { _, _ -> goToMenu() }
-                .setNegativeButton("No") { _, _ -> gameView.resumeGame() }
-                .setOnCancelListener { gameView.resumeGame() }
+                .setNegativeButton("No") { _, _ -> resumeLoop() }
+                .setOnCancelListener { resumeLoop() }
                 .show()
         }
-
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                goToMenu()
-            }
-        })
 
         updateLives(3)
         tvScore.text = "Score: 0"
         tvDistance.text = "Distance: 0"
 
-        gameView.startGame()
+        engine.start()
+        startLoop()
     }
 
     override fun onResume() {
@@ -118,12 +136,18 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
             }
         }
+        resumeLoop()
     }
 
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(this)
-        gameView.pauseGame()
+        pauseLoop()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        soundService.release()
     }
 
     override fun onSensorChanged(event: SensorEvent) {
@@ -134,18 +158,46 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         if (now - lastMoveTime < moveCooldownMs) return
 
         if (x > tiltThreshold) {
-            gameView.moveLeft()
+            engine.moveLeft()
             lastMoveTime = now
         } else if (x < -tiltThreshold) {
-            gameView.moveRight()
+            engine.moveRight()
             lastMoveTime = now
         }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
+    private fun startLoop() {
+        lastFrameTimeMs = System.currentTimeMillis()
+        handler.post(frameRunnable)
+    }
+
+    private fun resumeLoop() {
+        lastFrameTimeMs = System.currentTimeMillis()
+        handler.removeCallbacks(frameRunnable)
+        handler.post(frameRunnable)
+    }
+
+    private fun pauseLoop() {
+        handler.removeCallbacks(frameRunnable)
+    }
+
+    private val frameRunnable = object : Runnable {
+        override fun run() {
+            val now = System.currentTimeMillis()
+            val dt = (now - lastFrameTimeMs).coerceAtMost(50L) / 1000f
+            lastFrameTimeMs = now
+
+            engine.update(dtSeconds = dt, gameHeight = gameView.height.toFloat())
+
+            val delayMs = if (speedMode == "FAST") 20L else 35L
+            handler.postDelayed(this, delayMs)
+        }
+    }
+
     private fun goToMenu() {
-        gameView.stopGame()
+        engine.stop()
         startActivity(
             Intent(this, MenuActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -166,8 +218,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun showSaveScoreDialog() {
-        val finalScore = gameView.getScore()
-        val finalDistance = gameView.getDistance()
+        val finalScore = engine.getScore()
+        val finalDistance = engine.getDistance()
 
         val input = android.widget.EditText(this)
         input.hint = "Your name"
@@ -191,16 +243,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                         timestamp = System.currentTimeMillis()
                     )
                 )
-
                 goToMenu()
             }
             .show()
-    }
-
-    private fun applyStatusBarTopPadding() {
-        val root = findViewById<View>(android.R.id.content)
-        val resId = resources.getIdentifier("status_bar_height", "dimen", "android")
-        val height = if (resId > 0) resources.getDimensionPixelSize(resId) else 0
-        root.setPadding(root.paddingLeft, height, root.paddingRight, root.paddingBottom)
     }
 }
